@@ -1,0 +1,42 @@
+# API Keys and Secrets
+*.env
+.env
+config.json
+api_key.txt
+
+# Generated Logs
+*.log
+test_*.log
+access.log
+
+# Reports
+*.pdf
+report_*.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
