@@ -1,0 +1,73 @@
+# AI Log Auditor Configuration File
+# Customize attack detection patterns for your environment
+# Save this as config.yaml and use with --config flag
+
+attack_patterns:
+  # SQL Injection patterns
+  "SQL Injection":
+    - "(\bUNION\b.*\bSELECT\b)"
+    - "(\bOR\b.*['\"].*['\"].*\b=\b.*['\"].*['\"])"
+    - "(\bDROP\b.*\bTABLE\b)"
+    - "(\bINSERT\b.*\bINTO\b.*\bVALUES\b)"
+    - "(\bDELETE\b.*\bFROM\b)"
+    - "(;\s*DROP\s+TABLE)"
+    - "(;\s*DELETE\s+FROM)"
+    - "(\bexec\s*\(.*select)"
+    - "(/\*.*\*/)"
+    - "(--.*)"
+    # Add custom patterns for your environment
+    - "(your_custom_sql_pattern)"
+
+  # Cross-Site Scripting (XSS) patterns
+  "Cross-Site Scripting (XSS)":
+    - "(<script[^>]*>.*?</script>)"
+    - "(javascript:)"
+    - "(onerror\s*=)"
+    - "(onload\s*=)"
+    - "(onclick\s*=)"
+    - "(<img[^>]*src\s*=\s*['\"]javascript:)"
+    - "(<iframe[^>]*>)"
+    - "(alert\s*\(.*\))"
+    - "(document\.cookie)"
+    - "(eval\s*\()"
+
+  # Command Injection patterns
+  "Command Injection":
+    - "(;\s*(cat|ls|rm|wget|curl|nc|netcat)\s)"
+    - "(\|\s*(cat|ls|rm|wget|curl|nc|netcat)\s)"
+    - "(`[^`]+`)"
+    - "(\$\{[^}]+\})"
+    - "(&&\s*(cat|ls|rm|wget|curl|nc|netcat)\s)"
+    - "(>.*\.(sh|exe|bat|ps1))"
+
+  # Path Traversal patterns
+  "Path Traversal":
+    - "(\.\.\/\.\.\/)"
+    - "(\.\.\\\.\.\\)"
+    - "(\.\.\/\.\.\/\.\.\/)"
+    - "(\.\.%2F)"
+    - "(\.\.%5C)"
+    - "(\.\.%252F)"
+    - "(\/etc\/passwd)"
+    - "(\/windows\/system32)"
+    - "(C:\\Windows\\System32)"
+
+  # Authentication Bypass patterns
+  "Authentication Bypass":
+    - "(admin\s*'?\s*OR\s*'1'\s*=\s*'1)"
+    - "(password\s*=\s*['\"]\s*OR\s*['\"]\s*=\s*['\"])"
+    - "(\btrue\b|\b1\b)\s*(--|\#|\/\*)"
+    - "(bypass|admin|root|administrator)"
+
+  # File Inclusion patterns
+  "File Inclusion":
+    - "(include\s*\([^)]*\.\.)"
+    - "(require\s*\([^)]*\.\.)"
+    - "(include_once\s*\([^)]*\.\.)"
+    - "(require_once\s*\([^)]*\.\.)"
+    - "(php://filter)"
+    - "(data://text/plain)"
+
+# Example: Add custom attack types
+# "Custom Attack Type":
+#   - "(your_pattern_here)"

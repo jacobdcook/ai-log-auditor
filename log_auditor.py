@@ -8,9 +8,11 @@ and identify potential security threats, explaining why specific log entries are
 import re
 import argparse
 import json
+import yaml
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
+from enum import Enum
 import sys
 import html
 
@@ -34,9 +36,23 @@ except ImportError:
     print("ERROR: reportlab library not installed. Run: pip install reportlab")
     sys.exit(1)
 
+try:
+    import yaml
+except ImportError:
+    yaml = None
+    print("⚠️  Warning: PyYAML not installed. Config file support disabled. Run: pip install pyyaml")
 
-# Attack pattern definitions
-ATTACK_PATTERNS = {
+
+class LogFormat(Enum):
+    """Supported log file formats."""
+    APACHE = "apache"
+    SYSLOG = "syslog"
+    WINDOWS_EVENT = "windows_event"
+    GENERIC = "generic"  # Fallback for unknown formats
+
+
+# Default attack pattern definitions
+DEFAULT_ATTACK_PATTERNS = {
     "SQL Injection": [
         r"(\bUNION\b.*\bSELECT\b)",
         r"(\bOR\b.*['\"].*['\"].*\b=\b.*['\"].*['\"])",
@@ -97,21 +113,158 @@ ATTACK_PATTERNS = {
 }
 
 
+def detect_log_format(log_path: Path, sample_lines: int = 10) -> LogFormat:
+    """
+    Detect the log file format by analyzing sample lines.
+    
+    Args:
+        log_path: Path to the log file
+        sample_lines: Number of lines to sample for detection
+        
+    Returns:
+        Detected LogFormat enum
+    """
+    try:
+        with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+            lines = [f.readline().strip() for _ in range(sample_lines) if f.readline()]
+        
+        if not lines:
+            return LogFormat.GENERIC
+        
+        # Apache access log detection (IP - - [timestamp] "method path" status size)
+        apache_pattern = r'^\d+\.\d+\.\d+\.\d+\s+-\s+-\s+\[.*\]\s+"[A-Z]+\s+.*"\s+\d+\s+\d+'
+        if any(re.match(apache_pattern, line) for line in lines):
+            return LogFormat.APACHE
+        
+        # Syslog detection (timestamp hostname service: message)
+        syslog_pattern = r'^[A-Z][a-z]{2}\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\S+\s+\S+:\s+.*'
+        if any(re.match(syslog_pattern, line) for line in lines):
+            return LogFormat.SYSLOG
+        
+        # Windows Event Log detection (EventID, EventType, etc.)
+        windows_patterns = [
+            r'EventID\s*=\s*\d+',
+            r'EventType\s*=\s*\w+',
+            r'<EventID>',
+            r'LogName:\s*\w+',
+        ]
+        if any(any(re.search(p, line, re.IGNORECASE) for p in windows_patterns) for line in lines):
+            return LogFormat.WINDOWS_EVENT
+        
+        return LogFormat.GENERIC
+    except Exception:
+        return LogFormat.GENERIC
+
+
+def parse_log_line(line: str, log_format: LogFormat) -> Dict:
+    """
+    Parse a log line based on its format and extract relevant fields.
+    
+    Args:
+        line: Raw log line
+        log_format: Detected log format
+        
+    Returns:
+        Dictionary with parsed fields (ip, timestamp, message, etc.)
+    """
+    parsed = {
+        "raw": line.strip(),
+        "format": log_format.value,
+        "ip": None,
+        "timestamp": None,
+        "message": line.strip(),
+    }
+    
+    if log_format == LogFormat.APACHE:
+        # Apache: IP - - [timestamp] "method path" status size "user-agent"
+        match = re.match(r'^(\d+\.\d+\.\d+\.\d+)\s+-\s+-\s+\[([^\]]+)\]\s+"([^"]+)"\s+(\d+)\s+(\d+)\s+"([^"]*)"', line)
+        if match:
+            parsed["ip"] = match.group(1)
+            parsed["timestamp"] = match.group(2)
+            parsed["method_path"] = match.group(3)
+            parsed["status"] = match.group(4)
+            parsed["message"] = match.group(3)  # Use method+path for pattern matching
+    
+    elif log_format == LogFormat.SYSLOG:
+        # Syslog: timestamp hostname service: message
+        match = re.match(r'^[A-Z][a-z]{2}\s+\d+\s+(\d{2}:\d{2}:\d{2})\s+(\S+)\s+(\S+):\s+(.*)', line)
+        if match:
+            parsed["timestamp"] = match.group(1)
+            parsed["hostname"] = match.group(2)
+            parsed["service"] = match.group(3)
+            parsed["message"] = match.group(4)
+    
+    elif log_format == LogFormat.WINDOWS_EVENT:
+        # Windows Event Log - extract EventID and message
+        event_id_match = re.search(r'EventID[:\s=]+(\d+)', line, re.IGNORECASE)
+        if event_id_match:
+            parsed["event_id"] = event_id_match.group(1)
+        # Extract message content
+        message_match = re.search(r'Message[:\s=]+(.*?)(?:\n|$)', line, re.IGNORECASE | re.DOTALL)
+        if message_match:
+            parsed["message"] = message_match.group(1).strip()
+    
+    return parsed
+
+
+def load_config_file(config_path: Optional[Path] = None) -> Dict:
+    """
+    Load attack patterns from a configuration file.
+    
+    Args:
+        config_path: Path to config file (YAML or JSON). If None, uses default patterns.
+        
+    Returns:
+        Dictionary of attack patterns matching DEFAULT_ATTACK_PATTERNS structure
+    """
+    if config_path is None or not config_path.exists():
+        return DEFAULT_ATTACK_PATTERNS
+    
+    try:
+        with open(config_path, 'r') as f:
+            if config_path.suffix.lower() == '.yaml' or config_path.suffix.lower() == '.yml':
+                if yaml is None:
+                    print("⚠️  Warning: PyYAML not installed. Using default patterns.")
+                    return DEFAULT_ATTACK_PATTERNS
+                config = yaml.safe_load(f)
+            else:
+                config = json.load(f)
+        
+        # Validate and merge with defaults
+        if "attack_patterns" in config:
+            # Merge custom patterns with defaults
+            merged = DEFAULT_ATTACK_PATTERNS.copy()
+            for attack_type, patterns in config["attack_patterns"].items():
+                if isinstance(patterns, list):
+                    merged[attack_type] = patterns
+                elif isinstance(patterns, dict) and "patterns" in patterns:
+                    merged[attack_type] = patterns["patterns"]
+            return merged
+        
+        return DEFAULT_ATTACK_PATTERNS
+    except Exception as e:
+        print(f"⚠️  Warning: Error loading config file: {e}. Using default patterns.")
+        return DEFAULT_ATTACK_PATTERNS
+
+
 class LogAuditor:
     """Main log auditor class that scans logs and uses AI to explain threats."""
     
-    def __init__(self, api_key: str = None, use_groq: bool = False):
+    def __init__(self, api_key: str = None, use_groq: bool = False, config_file: Path = None):
         """
         Initialize the log auditor.
         
         Args:
             api_key: API key (OpenAI or Groq). If None, will try to read from environment.
             use_groq: If True, use Groq instead of OpenAI (free alternative)
+            config_file: Path to configuration file with custom attack patterns (YAML or JSON)
         """
         self.api_key = api_key
         self.use_groq = use_groq
         self.openai_client = None
         self.groq_client = None
+        self.config_file = config_file
+        self.attack_patterns = load_config_file(config_file)
         
         import os
         
@@ -147,17 +300,27 @@ class LogAuditor:
             "by_attack_type": {}
         }
     
-    def scan_log_file(self, log_path: Path) -> List[Dict]:
+    def scan_log_file(self, log_path: Path, log_format: Optional[LogFormat] = None) -> List[Dict]:
         """
         Scan a log file for attack patterns.
         
         Args:
             log_path: Path to the log file
+            log_format: Optional log format. If None, will auto-detect.
             
         Returns:
             List of dictionaries containing suspicious log entries
         """
         print(f"📄 Scanning log file: {log_path}")
+        
+        # Auto-detect log format if not specified
+        if log_format is None:
+            print(f"🔍 Detecting log format...")
+            log_format = detect_log_format(log_path)
+            print(f"   Detected format: {log_format.value.upper()}\n")
+        else:
+            print(f"   Using format: {log_format.value.upper()}\n")
+        
         print(f"🔍 Analyzing for attack patterns...\n")
         
         suspicious_lines = []
@@ -169,16 +332,23 @@ class LogAuditor:
                     line_number += 1
                     self.scan_stats["total_lines"] += 1
                     
+                    # Parse log line based on format
+                    parsed = parse_log_line(line, log_format)
+                    # Use parsed message for pattern matching (more accurate)
+                    search_text = parsed.get("message", line)
+                    
                     # Check each attack pattern
-                    for attack_type, patterns in ATTACK_PATTERNS.items():
+                    for attack_type, patterns in self.attack_patterns.items():
                         for pattern in patterns:
-                            if re.search(pattern, line, re.IGNORECASE):
+                            if re.search(pattern, search_text, re.IGNORECASE):
                                 # Found suspicious pattern
                                 suspicious_lines.append({
                                     "line_number": line_number,
                                     "line_content": line.strip(),
+                                    "parsed": parsed,
                                     "attack_type": attack_type,
                                     "matched_pattern": pattern,
+                                    "log_format": log_format.value,
                                 })
                                 
                                 # Update stats
@@ -455,15 +625,29 @@ Examples:
                        help='Generate PDF report (specify output filename)')
     parser.add_argument('--text-report', type=str, metavar='OUTPUT_FILE',
                        help='Generate text report (specify output filename)')
+    parser.add_argument('--config', type=str, metavar='CONFIG_FILE',
+                       help='Path to configuration file with custom attack patterns (YAML or JSON)')
+    parser.add_argument('--format', type=str, choices=['apache', 'syslog', 'windows_event', 'auto'],
+                       default='auto', help='Log file format (default: auto-detect)')
     
     args = parser.parse_args()
     
+    # Parse log format
+    format_map = {
+        'apache': LogFormat.APACHE,
+        'syslog': LogFormat.SYSLOG,
+        'windows_event': LogFormat.WINDOWS_EVENT,
+        'auto': None
+    }
+    log_format = format_map[args.format]
+    
     # Initialize auditor
-    auditor = LogAuditor(api_key=args.api_key, use_groq=args.groq)
+    config_path = Path(args.config) if args.config else None
+    auditor = LogAuditor(api_key=args.api_key, use_groq=args.groq, config_file=config_path)
     
     # Scan log file
     log_path = Path(args.log_file)
-    suspicious_lines = auditor.scan_log_file(log_path)
+    suspicious_lines = auditor.scan_log_file(log_path, log_format=log_format)
     
     # Use AI to explain suspicious entries
     ai_client_available = (auditor.openai_client is not None) or (auditor.groq_client is not None)
