@@ -8,7 +8,6 @@ and identify potential security threats, explaining why specific log entries are
 import re
 import argparse
 import json
-import yaml
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
@@ -126,7 +125,12 @@ def detect_log_format(log_path: Path, sample_lines: int = 10) -> LogFormat:
     """
     try:
         with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
-            lines = [f.readline().strip() for _ in range(sample_lines) if f.readline()]
+            lines = []
+            for _ in range(sample_lines):
+                line = f.readline()
+                if not line:
+                    break
+                lines.append(line.strip())
         
         if not lines:
             return LogFormat.GENERIC
@@ -338,7 +342,10 @@ class LogAuditor:
                     search_text = parsed.get("message", line)
                     
                     # Check each attack pattern
+                    matched = False
                     for attack_type, patterns in self.attack_patterns.items():
+                        if matched:
+                            break
                         for pattern in patterns:
                             if re.search(pattern, search_text, re.IGNORECASE):
                                 # Found suspicious pattern
@@ -350,19 +357,15 @@ class LogAuditor:
                                     "matched_pattern": pattern,
                                     "log_format": log_format.value,
                                 })
-                                
+
                                 # Update stats
                                 if attack_type not in self.scan_stats["by_attack_type"]:
                                     self.scan_stats["by_attack_type"][attack_type] = 0
                                 self.scan_stats["by_attack_type"][attack_type] += 1
-                                
+
                                 # Only count each line once (break after first match)
+                                matched = True
                                 break
-                        
-                        # If we matched something, stop checking other attack types for this line
-                        if any(s["line_number"] == line_number and s["attack_type"] == attack_type 
-                               for s in suspicious_lines):
-                            break
         
         except FileNotFoundError:
             print(f"❌ ERROR: File not found: {log_path}")
