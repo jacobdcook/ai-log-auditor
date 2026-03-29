@@ -145,8 +145,8 @@ AI Log Auditor/
 
 ## Use Cases
 
-- SOC teams analyzing web server logs
-- Security analysts investigating incidents
+- Detection engineering and SOC teams analyzing web server logs
+- Security operations staff investigating incidents
 - Learning common attack patterns
 - Automated log review workflows
 - Security research and education
